@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const CLOB_BASE_URL = "https://clob.polymarket.com";
 
 type QueryValue =
@@ -36,11 +38,11 @@ const buildUrl = (path: string, params?: Record<string, QueryValue>) => {
   return url.toString();
 };
 
-const clobFetch = async <T>(
+const clobFetch = async (
   path: string,
   params?: Record<string, QueryValue>,
   init?: RequestInit
-): Promise<T> => {
+): Promise<unknown> => {
   const url = buildUrl(path, params);
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) {
@@ -58,8 +60,53 @@ const clobFetch = async <T>(
     throw new Error(`CLOB API error ${response.status}: ${message}`);
   }
 
-  return (await response.json()) as T;
+  return (await response.json()) as unknown;
 };
+
+const stringFromUnknown = z.union([z.string(), z.number()]).transform((value) =>
+  String(value)
+);
+
+const ClobPriceSchema = z
+  .object({
+    price: stringFromUnknown,
+  })
+  .catchall(z.any());
+
+const ClobMidpointSchema = z
+  .object({
+    mid: stringFromUnknown,
+  })
+  .catchall(z.any());
+
+const ClobBookEntrySchema = z
+  .object({
+    price: stringFromUnknown,
+    size: stringFromUnknown,
+  })
+  .catchall(z.any());
+
+const ClobOrderBookSchema = z
+  .object({
+    market: stringFromUnknown.nullable().optional(),
+    asset_id: stringFromUnknown.nullable().optional(),
+    bids: z.array(ClobBookEntrySchema),
+    asks: z.array(ClobBookEntrySchema),
+  })
+  .catchall(z.any());
+
+const ClobPriceHistorySchema = z
+  .object({
+    history: z.array(
+      z
+        .object({
+          t: z.number(),
+          p: z.number(),
+        })
+        .catchall(z.any())
+    ),
+  })
+  .catchall(z.any());
 
 export type ClobSide = "BUY" | "SELL" | "buy" | "sell";
 
@@ -104,12 +151,12 @@ export interface ClobPriceHistoryQuery {
   fidelity?: number;
 }
 
-export const getPrice = (
+export const getPrice = async (
   tokenId: string,
   side: ClobSide,
   init?: RequestInit
-): Promise<ClobPriceResponse> =>
-  clobFetch<ClobPriceResponse>(
+): Promise<ClobPriceResponse> => {
+  const data = await clobFetch(
     "/price",
     {
       token_id: tokenId,
@@ -117,21 +164,29 @@ export const getPrice = (
     },
     init
   );
+  return ClobPriceSchema.parse(data) as ClobPriceResponse;
+};
 
-export const getMidpoint = (
+export const getMidpoint = async (
   tokenId: string,
   init?: RequestInit
-): Promise<ClobMidpointResponse> =>
-  clobFetch<ClobMidpointResponse>("/midpoint", { token_id: tokenId }, init);
+): Promise<ClobMidpointResponse> => {
+  const data = await clobFetch("/midpoint", { token_id: tokenId }, init);
+  return ClobMidpointSchema.parse(data) as ClobMidpointResponse;
+};
 
-export const getOrderBook = (
+export const getOrderBook = async (
   tokenId: string,
   init?: RequestInit
-): Promise<ClobOrderBookResponse> =>
-  clobFetch<ClobOrderBookResponse>("/book", { token_id: tokenId }, init);
+): Promise<ClobOrderBookResponse> => {
+  const data = await clobFetch("/book", { token_id: tokenId }, init);
+  return ClobOrderBookSchema.parse(data) as ClobOrderBookResponse;
+};
 
-export const getPriceHistory = (
+export const getPriceHistory = async (
   params: ClobPriceHistoryQuery,
   init?: RequestInit
-): Promise<ClobPriceHistoryResponse> =>
-  clobFetch<ClobPriceHistoryResponse>("/prices-history", params, init);
+): Promise<ClobPriceHistoryResponse> => {
+  const data = await clobFetch("/prices-history", params, init);
+  return ClobPriceHistorySchema.parse(data) as ClobPriceHistoryResponse;
+};

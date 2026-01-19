@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 
 type QueryValue =
@@ -36,11 +38,11 @@ const buildUrl = (path: string, params?: Record<string, QueryValue>) => {
   return url.toString();
 };
 
-const gammaFetch = async <T>(
+const gammaFetch = async (
   path: string,
   params?: Record<string, QueryValue>,
   init?: RequestInit
-): Promise<T> => {
+): Promise<unknown> => {
   const url = buildUrl(path, params);
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) {
@@ -58,8 +60,43 @@ const gammaFetch = async <T>(
     throw new Error(`Gamma API error ${response.status}: ${message}`);
   }
 
-  return (await response.json()) as T;
+  return (await response.json()) as unknown;
 };
+
+const stringFromUnknown = z.union([z.string(), z.number()]).transform((value) =>
+  String(value)
+);
+
+const GammaMarketSchema = z
+  .object({
+    id: stringFromUnknown,
+    conditionId: stringFromUnknown,
+    question: z.string().nullable().optional(),
+    slug: z.string().nullable().optional(),
+    volumeNum: z.number().nullable().optional(),
+    liquidityNum: z.number().nullable().optional(),
+    endDate: z.string().nullable().optional(),
+    active: z.boolean().nullable().optional(),
+    closed: z.boolean().nullable().optional(),
+  })
+  .catchall(z.any());
+
+const GammaMarketListSchema = z.array(GammaMarketSchema);
+
+const GammaEventSchema = z
+  .object({
+    id: stringFromUnknown.optional().nullable(),
+    title: z.string().nullable().optional(),
+    slug: z.string().nullable().optional(),
+    markets: z.array(GammaMarketSchema).optional().nullable(),
+  })
+  .catchall(z.any());
+
+const GammaPublicSearchSchema = z
+  .object({
+    events: z.array(GammaEventSchema).optional().nullable(),
+  })
+  .catchall(z.any());
 
 export interface GammaImageOptimized {
   imageUrlSource?: string | null;
@@ -446,24 +483,34 @@ export interface GammaPublicSearchQuery {
   optimized?: boolean;
 }
 
-export const listMarkets = (
+export const listMarkets = async (
   params?: GammaMarketsQuery,
   init?: RequestInit
-): Promise<GammaMarket[]> => gammaFetch<GammaMarket[]>("/markets", params, init);
+): Promise<GammaMarket[]> => {
+  const data = await gammaFetch("/markets", params, init);
+  return GammaMarketListSchema.parse(data) as GammaMarket[];
+};
 
-export const searchMarkets = (
+export const searchMarkets = async (
   params: GammaPublicSearchQuery,
   init?: RequestInit
-): Promise<GammaPublicSearchResponse> =>
-  gammaFetch<GammaPublicSearchResponse>("/public-search", params, init);
+): Promise<GammaPublicSearchResponse> => {
+  const data = await gammaFetch("/public-search", params, init);
+  return GammaPublicSearchSchema.parse(data) as GammaPublicSearchResponse;
+};
 
-export const getMarketBySlug = (
+export const getMarketBySlug = async (
   slug: string,
   init?: RequestInit
-): Promise<GammaMarket[]> =>
-  gammaFetch<GammaMarket[]>("/markets", { slug: [slug] }, init);
+): Promise<GammaMarket[]> => {
+  const data = await gammaFetch("/markets", { slug: [slug] }, init);
+  return GammaMarketListSchema.parse(data) as GammaMarket[];
+};
 
-export const getMarketById = (
+export const getMarketById = async (
   id: number,
   init?: RequestInit
-): Promise<GammaMarket[]> => gammaFetch<GammaMarket[]>("/markets", { id: [id] }, init);
+): Promise<GammaMarket[]> => {
+  const data = await gammaFetch("/markets", { id: [id] }, init);
+  return GammaMarketListSchema.parse(data) as GammaMarket[];
+};

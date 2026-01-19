@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const DATA_BASE_URL = "https://data-api.polymarket.com";
 
 type QueryValue =
@@ -36,11 +38,11 @@ const buildUrl = (path: string, params?: Record<string, QueryValue>) => {
   return url.toString();
 };
 
-const dataFetch = async <T>(
+const dataFetch = async (
   path: string,
   params?: Record<string, QueryValue>,
   init?: RequestInit
-): Promise<T> => {
+): Promise<unknown> => {
   const url = buildUrl(path, params);
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) {
@@ -58,12 +60,22 @@ const dataFetch = async <T>(
     throw new Error(`Data API error ${response.status}: ${message}`);
   }
 
-  return (await response.json()) as T;
+  return (await response.json()) as unknown;
 };
+
+const DataApiHealthSchema = z
+  .object({
+    data: z.string(),
+  })
+  .catchall(z.any());
 
 export interface DataApiHealthResponse {
   data: string;
 }
 
-export const getHealth = (init?: RequestInit): Promise<DataApiHealthResponse> =>
-  dataFetch<DataApiHealthResponse>("/", undefined, init);
+export const getHealth = async (
+  init?: RequestInit
+): Promise<DataApiHealthResponse> => {
+  const data = await dataFetch("/", undefined, init);
+  return DataApiHealthSchema.parse(data) as DataApiHealthResponse;
+};
