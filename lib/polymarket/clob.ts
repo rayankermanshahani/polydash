@@ -96,6 +96,7 @@ export interface ClobPriceHistoryResponse {
 export type ClobHistoryInterval = "1m" | "1h" | "6h" | "1d" | "1w" | "max";
 
 export interface ClobPriceHistoryQuery {
+  [key: string]: QueryValue;
   market: string;
   startTs?: number;
   endTs?: number;

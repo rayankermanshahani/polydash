@@ -396,6 +396,7 @@ export interface GammaPublicSearchResponse {
 }
 
 export interface GammaMarketsQuery {
+  [key: string]: QueryValue;
   limit?: number;
   offset?: number;
   order?: string;
@@ -428,6 +429,7 @@ export interface GammaMarketsQuery {
 }
 
 export interface GammaPublicSearchQuery {
+  [key: string]: QueryValue;
   q: string;
   cache?: boolean;
   events_status?: string;
