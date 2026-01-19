@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,25 +12,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MarketTable } from "@/components/markets/MarketTable";
 import { useMarketSearch, useMarkets } from "@/hooks/useMarkets";
 import type {
   GammaMarket,
   GammaMarketsQuery,
   GammaPublicSearchQuery,
 } from "@/lib/polymarket/gamma";
+import {
+  getMarketCategory,
+  getMarketEndDateTimestamp,
+  getMarketLiquidity,
+  getMarketVolume,
+} from "@/lib/markets";
 
 type MarketStatus = "open" | "resolved" | "all";
 
 type SortOption = "volume" | "liquidity" | "ending-soon";
+type SortDirection = "desc" | "asc";
 
 const SORT_LABELS: Record<SortOption, string> = {
   volume: "Volume",
@@ -37,18 +38,20 @@ const SORT_LABELS: Record<SortOption, string> = {
   "ending-soon": "Ending soon",
 };
 
-const toNumber = (value: unknown) => {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+const SORT_DIRECTION_LABELS: Record<SortDirection, string> = {
+  desc: "Descending",
+  asc: "Ascending",
+};
+
+const DEFAULT_FILTERS = {
+  q: "",
+  status: "open" as MarketStatus,
+  sortBy: "volume" as SortOption,
+  sortDirection: "desc" as SortDirection,
+  category: "all",
+  volumeThreshold: "any",
+  dateFrom: "",
+  dateTo: "",
 };
 
 const escapeRegExp = (value: string) =>
@@ -74,77 +77,132 @@ const highlightText = (text: string, query: string): ReactNode => {
       </mark>
     ) : (
       <span key={`${part}-${index}`}>{part}</span>
-    )
+    ),
   );
 };
 
-const formatStatus = (market: GammaMarket) => {
-  if (market.closed) {
-    return { label: "Resolved", variant: "secondary" as const };
-  }
-  if (market.active) {
-    return { label: "Open", variant: "default" as const };
-  }
-  return { label: "Inactive", variant: "outline" as const };
-};
+const VOLUME_OPTIONS = [
+  { label: "Any volume", value: "any" },
+  { label: "≥ $10k", value: "10000" },
+  { label: "≥ $100k", value: "100000" },
+  { label: "≥ $1m", value: "1000000" },
+  { label: "≥ $10m", value: "10000000" },
+];
 
-const getMarketDisplayName = (market: GammaMarket) =>
-  market.question ?? market.slug ?? "Untitled market";
-
-const getVolumeValue = (market: GammaMarket) =>
-  market.volumeNum ?? toNumber(market.volume);
-
-const getLiquidityValue = (market: GammaMarket) => market.liquidityNum ?? null;
-
-const getEndDateValue = (market: GammaMarket) => {
-  if (market.endDateIso) {
-    return Date.parse(market.endDateIso);
-  }
-  if (market.endDate) {
-    return Date.parse(market.endDate);
-  }
-  return null;
-};
-
-const sortMarkets = (markets: GammaMarket[], sortBy: SortOption) => {
+const sortMarkets = (
+  markets: GammaMarket[],
+  sortBy: SortOption,
+  direction: SortDirection,
+) => {
   const sorted = [...markets];
+  const factor = direction === "asc" ? 1 : -1;
 
   if (sortBy === "volume") {
     sorted.sort(
-      (a, b) => (getVolumeValue(b) ?? 0) - (getVolumeValue(a) ?? 0)
+      (a, b) =>
+        ((getMarketVolume(a) ?? 0) - (getMarketVolume(b) ?? 0)) * factor,
     );
   }
 
   if (sortBy === "liquidity") {
     sorted.sort(
-      (a, b) => (getLiquidityValue(b) ?? 0) - (getLiquidityValue(a) ?? 0)
+      (a, b) =>
+        ((getMarketLiquidity(a) ?? 0) - (getMarketLiquidity(b) ?? 0)) * factor,
     );
   }
 
   if (sortBy === "ending-soon") {
     sorted.sort(
-      (a, b) => (getEndDateValue(a) ?? 0) - (getEndDateValue(b) ?? 0)
+      (a, b) =>
+        ((getMarketEndDateTimestamp(a) ?? 0) -
+          (getMarketEndDateTimestamp(b) ?? 0)) *
+        factor,
     );
   }
 
   return sorted;
 };
 
-const filterByStatus = (markets: GammaMarket[], status: MarketStatus) => {
+const matchesStatus = (market: GammaMarket, status: MarketStatus) => {
   if (status === "all") {
-    return markets;
+    return true;
   }
   if (status === "resolved") {
-    return markets.filter((market) => market.closed ?? false);
+    return market.closed ?? false;
   }
-  return markets.filter((market) => market.active ?? !market.closed);
+  return market.active ?? !market.closed;
+};
+
+const parseDateInput = (value: string, endOfDay: boolean) => {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  if (endOfDay) {
+    date.setHours(23, 59, 59, 999);
+  }
+  return date.getTime();
+};
+
+const parseFiltersFromParams = (params: URLSearchParams) => {
+  const statusParam = params.get("status");
+  const sortParam = params.get("sort");
+  const directionParam = params.get("dir");
+  const categoryParam = params.get("category");
+  const volumeParam = params.get("minVolume");
+  const fromParam = params.get("from");
+  const toParam = params.get("to");
+
+  const status: MarketStatus =
+    statusParam === "resolved" || statusParam === "all"
+      ? statusParam
+      : DEFAULT_FILTERS.status;
+  const sortBy: SortOption =
+    sortParam === "liquidity" || sortParam === "ending-soon"
+      ? sortParam
+      : DEFAULT_FILTERS.sortBy;
+  const sortDirection: SortDirection =
+    directionParam === "asc" ? "asc" : DEFAULT_FILTERS.sortDirection;
+
+  const volumeValue =
+    volumeParam && VOLUME_OPTIONS.some((option) => option.value === volumeParam)
+      ? volumeParam
+      : DEFAULT_FILTERS.volumeThreshold;
+
+  return {
+    q: params.get("q") ?? DEFAULT_FILTERS.q,
+    status,
+    sortBy,
+    sortDirection,
+    category: categoryParam ?? DEFAULT_FILTERS.category,
+    volumeThreshold: volumeValue,
+    dateFrom: fromParam ?? DEFAULT_FILTERS.dateFrom,
+    dateTo: toParam ?? DEFAULT_FILTERS.dateTo,
+  };
 };
 
 export default function Home() {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [status, setStatus] = useState<MarketStatus>("open");
-  const [sortBy, setSortBy] = useState<SortOption>("volume");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const hasInitializedFilters = useRef(false);
+  const [isReady, setIsReady] = useState(false);
+
+  const [searchTerm, setSearchTerm] = useState(DEFAULT_FILTERS.q);
+  const [debouncedSearch, setDebouncedSearch] = useState(DEFAULT_FILTERS.q);
+  const [status, setStatus] = useState<MarketStatus>(DEFAULT_FILTERS.status);
+  const [sortBy, setSortBy] = useState<SortOption>(DEFAULT_FILTERS.sortBy);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(
+    DEFAULT_FILTERS.sortDirection,
+  );
+  const [category, setCategory] = useState(DEFAULT_FILTERS.category);
+  const [volumeThreshold, setVolumeThreshold] = useState(
+    DEFAULT_FILTERS.volumeThreshold,
+  );
+  const [dateFrom, setDateFrom] = useState(DEFAULT_FILTERS.dateFrom);
+  const [dateTo, setDateTo] = useState(DEFAULT_FILTERS.dateTo);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -153,6 +211,24 @@ export default function Home() {
 
     return () => clearTimeout(timeout);
   }, [searchTerm]);
+
+  useEffect(() => {
+    if (hasInitializedFilters.current) {
+      return;
+    }
+    hasInitializedFilters.current = true;
+    const parsed = parseFiltersFromParams(searchParams);
+    setSearchTerm(parsed.q);
+    setDebouncedSearch(parsed.q);
+    setStatus(parsed.status);
+    setSortBy(parsed.sortBy);
+    setSortDirection(parsed.sortDirection);
+    setCategory(parsed.category);
+    setVolumeThreshold(parsed.volumeThreshold);
+    setDateFrom(parsed.dateFrom);
+    setDateTo(parsed.dateTo);
+    setIsReady(true);
+  }, [searchParams]);
 
   const marketsQuery = useMemo(() => {
     const query: GammaMarketsQuery = {
@@ -172,9 +248,9 @@ export default function Home() {
     }
 
     return query;
-  }, [sortBy, status]);
+  }, [status]);
 
-  const searchParams = useMemo<GammaPublicSearchQuery | null>(() => {
+  const searchQueryParams = useMemo<GammaPublicSearchQuery | null>(() => {
     if (!debouncedSearch) {
       return null;
     }
@@ -207,7 +283,9 @@ export default function Home() {
     data: searchResults,
     isLoading: searchLoading,
     error: searchError,
-  } = useMarketSearch(searchParams, { enabled: Boolean(searchParams) });
+  } = useMarketSearch(searchQueryParams, {
+    enabled: Boolean(searchQueryParams),
+  });
 
   const searchMarkets = useMemo(() => {
     if (!searchResults?.events) {
@@ -232,14 +310,86 @@ export default function Home() {
   }, [searchResults]);
 
   const hasSearch = debouncedSearch.length > 0;
-  const baseMarkets = hasSearch ? searchMarkets : markets ?? [];
-  const filteredMarkets = useMemo(
-    () => filterByStatus(baseMarkets, status),
-    [baseMarkets, status]
+  const baseMarkets = hasSearch ? searchMarkets : (markets ?? []);
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    baseMarkets.forEach((market) => {
+      const value = getMarketCategory(market);
+      if (value) {
+        set.add(value);
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [baseMarkets]);
+
+  useEffect(() => {
+    if (category !== "all" && !categories.includes(category)) {
+      setCategory("all");
+    }
+  }, [category, categories]);
+
+  const dateFromTimestamp = useMemo(
+    () => parseDateInput(dateFrom, false),
+    [dateFrom],
   );
+  const dateToTimestamp = useMemo(() => parseDateInput(dateTo, true), [dateTo]);
+  const minVolume = useMemo(
+    () =>
+      volumeThreshold === "any"
+        ? null
+        : Number.isFinite(Number(volumeThreshold))
+          ? Number(volumeThreshold)
+          : null,
+    [volumeThreshold],
+  );
+
+  const filteredMarkets = useMemo(() => {
+    return baseMarkets.filter((market) => {
+      if (!matchesStatus(market, status)) {
+        return false;
+      }
+
+      if (category !== "all") {
+        const value = getMarketCategory(market);
+        if (!value || value !== category) {
+          return false;
+        }
+      }
+
+      if (minVolume !== null) {
+        const volume = getMarketVolume(market);
+        if (volume === null || volume < minVolume) {
+          return false;
+        }
+      }
+
+      if (dateFromTimestamp !== null || dateToTimestamp !== null) {
+        const endDate = getMarketEndDateTimestamp(market);
+        if (endDate === null) {
+          return false;
+        }
+        if (dateFromTimestamp !== null && endDate < dateFromTimestamp) {
+          return false;
+        }
+        if (dateToTimestamp !== null && endDate > dateToTimestamp) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    baseMarkets,
+    status,
+    category,
+    minVolume,
+    dateFromTimestamp,
+    dateToTimestamp,
+  ]);
+
   const sortedMarkets = useMemo(
-    () => sortMarkets(filteredMarkets, sortBy),
-    [filteredMarkets, sortBy]
+    () => sortMarkets(filteredMarkets, sortBy, sortDirection),
+    [filteredMarkets, sortBy, sortDirection],
   );
 
   const isLoading = hasSearch ? searchLoading : marketsLoading;
@@ -253,7 +403,7 @@ export default function Home() {
         notation: "compact",
         maximumFractionDigits: 2,
       }),
-    []
+    [],
   );
 
   const formatCurrency = (value: number | null) => {
@@ -269,10 +419,80 @@ export default function Home() {
   const emptyMessage = hasSearch
     ? `No markets match "${debouncedSearch}". Try a different search or clear filters.`
     : status === "resolved"
-    ? "No resolved markets available for this view."
-    : status === "open"
-    ? "No open markets available right now."
-    : "No markets found for the current filters.";
+      ? "No resolved markets available for this view."
+      : status === "open"
+        ? "No open markets available right now."
+        : "No markets found for the current filters.";
+
+  const highlightedName = useMemo(
+    () => (name: string) => highlightText(name, debouncedSearch),
+    [debouncedSearch],
+  );
+
+  const clearFilters = () => {
+    setSearchTerm("");
+    setDebouncedSearch("");
+    setStatus("open");
+    setSortBy("volume");
+    setSortDirection("desc");
+    setCategory("all");
+    setVolumeThreshold("any");
+    setDateFrom("");
+    setDateTo("");
+  };
+
+  const queryString = useMemo(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearch) {
+      params.set("q", debouncedSearch);
+    }
+    if (status !== "open") {
+      params.set("status", status);
+    }
+    if (sortBy !== "volume") {
+      params.set("sort", sortBy);
+    }
+    if (sortDirection !== "desc") {
+      params.set("dir", sortDirection);
+    }
+    if (category !== "all") {
+      params.set("category", category);
+    }
+    if (volumeThreshold !== "any") {
+      params.set("minVolume", volumeThreshold);
+    }
+    if (dateFrom) {
+      params.set("from", dateFrom);
+    }
+    if (dateTo) {
+      params.set("to", dateTo);
+    }
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  }, [
+    debouncedSearch,
+    status,
+    sortBy,
+    sortDirection,
+    category,
+    volumeThreshold,
+    dateFrom,
+    dateTo,
+  ]);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+    const currentQuery = searchParams.toString();
+    const nextQuery = queryString.startsWith("?")
+      ? queryString.slice(1)
+      : queryString;
+    if (currentQuery === nextQuery) {
+      return;
+    }
+    router.replace(`/${queryString}`, { scroll: false });
+  }, [isReady, queryString, router, searchParams]);
 
   return (
     <main className="min-h-screen bg-background">
@@ -296,10 +516,19 @@ export default function Home() {
         <section className="grid gap-6 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
           <Card>
             <CardHeader>
-              <CardTitle>Market Controls</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle>Market Controls</CardTitle>
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                >
+                  Clear filters
+                </button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <Input
                   placeholder="Search markets"
                   value={searchTerm}
@@ -320,6 +549,70 @@ export default function Home() {
                     ))}
                   </SelectContent>
                 </Select>
+                <Select
+                  value={sortDirection}
+                  onValueChange={(value) =>
+                    setSortDirection(value as SortDirection)
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Sort order" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(SORT_DIRECTION_LABELS).map(
+                      ([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Select
+                  value={category}
+                  onValueChange={(value) => setCategory(value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All categories</SelectItem>
+                    {categories.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={volumeThreshold}
+                  onValueChange={(value) => setVolumeThreshold(value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Volume threshold" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VOLUME_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(event) => setDateFrom(event.target.value)}
+                  aria-label="Filter start date"
+                />
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(event) => setDateTo(event.target.value)}
+                  aria-label="Filter end date"
+                />
               </div>
               <Tabs
                 value={status}
@@ -347,7 +640,7 @@ export default function Home() {
                   value="all"
                   className="text-sm text-muted-foreground"
                 >
-                  View every market across statuses.
+                  Filter via resolution status.
                 </TabsContent>
               </Tabs>
             </CardContent>
@@ -384,60 +677,14 @@ export default function Home() {
               <CardTitle>Top Markets Snapshot</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Market</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Volume</TableHead>
-                    <TableHead>Liquidity</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {isLoading ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-muted-foreground">
-                        Loading markets...
-                      </TableCell>
-                    </TableRow>
-                  ) : error ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-destructive">
-                        {error.message}
-                      </TableCell>
-                    </TableRow>
-                  ) : sortedMarkets.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-muted-foreground">
-                        {emptyMessage}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    sortedMarkets.map((market) => {
-                      const statusBadge = formatStatus(market);
-                      const displayName = getMarketDisplayName(market);
-                      return (
-                        <TableRow key={market.id}>
-                          <TableCell className="font-medium">
-                            {highlightText(displayName, debouncedSearch)}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={statusBadge.variant}>
-                              {statusBadge.label}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            {formatCurrency(getVolumeValue(market))}
-                          </TableCell>
-                          <TableCell>
-                            {formatCurrency(getLiquidityValue(market))}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
+              <MarketTable
+                markets={sortedMarkets}
+                isLoading={isLoading}
+                error={error}
+                emptyMessage={emptyMessage}
+                formatCurrency={formatCurrency}
+                renderName={hasSearch ? highlightedName : undefined}
+              />
             </CardContent>
           </Card>
         </section>
