@@ -26,8 +26,21 @@ export const getMarketCategory = (market: GammaMarket) => {
   if (market.category) {
     return market.category;
   }
-  const fallback = market.categories?.[0];
-  return fallback?.label ?? null;
+  const categoryFallback = market.categories?.[0];
+  if (categoryFallback?.label) {
+    return categoryFallback.label;
+  }
+  // Also check tags as categories (Polymarket often uses tags for categorization)
+  const tagFallback = market.tags?.[0];
+  if (tagFallback?.label) {
+    return tagFallback.label;
+  }
+  // Check event category if market has events
+  const eventCategory = market.events?.[0]?.category;
+  if (eventCategory) {
+    return eventCategory;
+  }
+  return null;
 };
 
 export const getMarketVolume = (market: GammaMarket) =>
@@ -51,7 +64,7 @@ export const getMarketStatusBadge = (market: GammaMarket): MarketStatusBadge => 
     return { label: "Resolved", variant: "secondary" };
   }
   if (market.active) {
-    return { label: "Open", variant: "default" };
+    return { label: "Active", variant: "default" };
   }
   return { label: "Inactive", variant: "outline" };
 };

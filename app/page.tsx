@@ -28,7 +28,7 @@ import {
   getMarketVolume,
 } from "@/lib/markets";
 
-type MarketStatus = "open" | "resolved" | "all";
+type MarketStatus = "active" | "resolved" | "all";
 
 type SortOption = "volume" | "liquidity" | "ending-soon";
 type SortDirection = "desc" | "asc";
@@ -46,7 +46,7 @@ const SORT_DIRECTION_LABELS: Record<SortDirection, string> = {
 
 const DEFAULT_FILTERS = {
   q: "",
-  status: "open" as MarketStatus,
+  status: "active" as MarketStatus,
   sortBy: "volume" as SortOption,
   sortDirection: "desc" as SortDirection,
   category: "all",
@@ -165,9 +165,10 @@ const matchesStatus = (market: GammaMarket, status: MarketStatus) => {
     return true;
   }
   if (status === "resolved") {
-    return market.closed ?? false;
+    return market.closed === true;
   }
-  return market.active ?? !market.closed;
+  // "active" status: must be active AND not closed
+  return market.active === true && market.closed !== true;
 };
 
 const parseDateInput = (value: string, endOfDay: boolean) => {
@@ -194,7 +195,7 @@ const parseFiltersFromParams = (params: URLSearchParams) => {
   const toParam = params.get("to");
 
   const status: MarketStatus =
-    statusParam === "resolved" || statusParam === "all"
+    statusParam === "active" || statusParam === "resolved" || statusParam === "all"
       ? statusParam
       : DEFAULT_FILTERS.status;
   const sortBy: SortOption =
@@ -275,7 +276,7 @@ export default function Home() {
     query.order = "id";
     query.ascending = false;
 
-    if (status === "open") {
+    if (status === "active" || status === "all") {
       query.active = true;
       query.closed = false;
     }
@@ -283,6 +284,21 @@ export default function Home() {
     if (status === "resolved") {
       query.closed = true;
     }
+
+    return query;
+  }, [status]);
+
+  const closedMarketsQuery = useMemo(() => {
+    if (status !== "all") {
+      return null;
+    }
+
+    const query: GammaMarketsQuery = {
+      limit: 50,
+      order: "id",
+      ascending: false,
+      closed: true,
+    };
 
     return query;
   }, [status]);
@@ -299,7 +315,7 @@ export default function Home() {
       search_profiles: false,
     };
 
-    if (status === "open") {
+    if (status === "active") {
       query.events_status = "active";
     }
 
@@ -315,6 +331,14 @@ export default function Home() {
     isLoading: marketsLoading,
     error: marketsError,
   } = useMarkets(marketsQuery);
+
+  const {
+    data: closedMarkets,
+    isLoading: closedMarketsLoading,
+    error: closedMarketsError,
+  } = useMarkets(closedMarketsQuery ?? undefined, {
+    enabled: closedMarketsQuery !== null,
+  });
 
   const {
     data: searchResults,
@@ -347,7 +371,23 @@ export default function Home() {
   }, [searchResults]);
 
   const hasSearch = debouncedSearch.length > 0;
-  const baseMarkets = hasSearch ? searchMarkets : (markets ?? []);
+
+  const combinedMarkets = useMemo(() => {
+    const allMarkets = [...(markets ?? [])];
+
+    if (closedMarkets) {
+      const existingIds = new Set(allMarkets.map((m) => m.id));
+      closedMarkets.forEach((market) => {
+        if (!existingIds.has(market.id)) {
+          allMarkets.push(market);
+        }
+      });
+    }
+
+    return allMarkets;
+  }, [markets, closedMarkets]);
+
+  const baseMarkets = hasSearch ? searchMarkets : combinedMarkets;
   const categories = useMemo(() => {
     const set = new Set<string>();
     baseMarkets.forEach((market) => {
@@ -429,8 +469,12 @@ export default function Home() {
     [filteredMarkets, sortBy, sortDirection],
   );
 
-  const isLoading = hasSearch ? searchLoading : marketsLoading;
-  const error = hasSearch ? searchError : marketsError;
+  const isLoading = hasSearch
+    ? searchLoading
+    : marketsLoading || closedMarketsLoading;
+  const error = hasSearch
+    ? searchError
+    : marketsError ?? closedMarketsError;
 
   const formatter = useMemo(
     () =>
@@ -450,15 +494,17 @@ export default function Home() {
     return formatter.format(value);
   };
 
-  const liveCount = markets?.filter((market) => market.active).length ?? 0;
-  const resolvedCount = markets?.filter((market) => market.closed).length ?? 0;
+  const liveCount =
+    combinedMarkets.filter((market) => market.active).length ?? 0;
+  const resolvedCount =
+    combinedMarkets.filter((market) => market.closed).length ?? 0;
 
   const emptyMessage = hasSearch
     ? `No markets match "${debouncedSearch}". Try a different search or clear filters.`
     : status === "resolved"
       ? "No resolved markets available for this view."
-      : status === "open"
-        ? "No open markets available right now."
+      : status === "active"
+        ? "No active markets available right now."
         : "No markets found for the current filters.";
 
   const highlightedName = useMemo(
@@ -469,7 +515,7 @@ export default function Home() {
   const clearFilters = () => {
     setSearchTerm("");
     setDebouncedSearch("");
-    setStatus("open");
+    setStatus("active");
     setSortBy("volume");
     setSortDirection("desc");
     setCategory("all");
@@ -483,7 +529,7 @@ export default function Home() {
     if (debouncedSearch) {
       params.set("q", debouncedSearch);
     }
-    if (status !== "open") {
+    if (status !== "active") {
       params.set("status", status);
     }
     if (sortBy !== "volume") {
@@ -548,16 +594,6 @@ export default function Home() {
               ? `Search results for "${debouncedSearch}"`
               : "Showing market snapshots from Gamma"}
           </div>
-          {isLoading ? (
-            <div className="rounded-lg border border-dashed border-border bg-secondary/40 px-4 py-3 text-sm text-muted-foreground">
-              Fetching live market data...
-            </div>
-          ) : error ? (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              Live data is unavailable right now. Showing sample top markets and
-              cached UI controls.
-            </div>
-          ) : null}
         </header>
 
         <section className="grid gap-6 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
@@ -653,12 +689,14 @@ export default function Home() {
                   value={dateFrom}
                   onChange={(event) => setDateFrom(event.target.value)}
                   aria-label="Filter start date"
+                  placeholder="From date"
                 />
                 <Input
                   type="date"
                   value={dateTo}
                   onChange={(event) => setDateTo(event.target.value)}
                   aria-label="Filter end date"
+                  placeholder="To date"
                 />
               </div>
               <Tabs
@@ -667,12 +705,12 @@ export default function Home() {
                 className="w-full"
               >
                 <TabsList>
-                  <TabsTrigger value="open">Open</TabsTrigger>
+                  <TabsTrigger value="active">Active</TabsTrigger>
                   <TabsTrigger value="resolved">Resolved</TabsTrigger>
                   <TabsTrigger value="all">All</TabsTrigger>
                 </TabsList>
                 <TabsContent
-                  value="open"
+                  value="active"
                   className="text-sm text-muted-foreground"
                 >
                   Filter markets that are currently trading.
@@ -699,7 +737,7 @@ export default function Home() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex items-center justify-between">
-                <span>Live markets (sample)</span>
+                <span>Active markets (sample)</span>
                 <Badge>{marketsLoading ? "..." : liveCount}</Badge>
               </div>
               <div className="flex items-center justify-between">
