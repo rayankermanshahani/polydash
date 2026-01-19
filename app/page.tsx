@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MarketCard } from "@/components/markets/MarketCard";
 import { MarketTable } from "@/components/markets/MarketTable";
 import { useMarketSearch, useMarkets } from "@/hooks/useMarkets";
 import type {
@@ -53,6 +54,42 @@ const DEFAULT_FILTERS = {
   dateFrom: "",
   dateTo: "",
 };
+
+const SAMPLE_TOP_MARKETS: GammaMarket[] = [
+  {
+    id: "sample-1",
+    conditionId: "sample-condition-1",
+    question: "Will the Fed cut rates by Q3 2026?",
+    category: "Macro",
+    volumeNum: 4200000,
+    liquidityNum: 780000,
+    endDate: "2026-09-30T00:00:00.000Z",
+    active: true,
+    closed: false,
+  },
+  {
+    id: "sample-2",
+    conditionId: "sample-condition-2",
+    question: "Will Bitcoin close above $100k this year?",
+    category: "Crypto",
+    volumeNum: 3100000,
+    liquidityNum: 640000,
+    endDate: "2026-12-31T00:00:00.000Z",
+    active: true,
+    closed: false,
+  },
+  {
+    id: "sample-3",
+    conditionId: "sample-condition-3",
+    question: "Will a new AI model beat GPT-5 on MMLU?",
+    category: "Technology",
+    volumeNum: 1550000,
+    liquidityNum: 320000,
+    endDate: "2026-11-15T00:00:00.000Z",
+    active: true,
+    closed: false,
+  },
+];
 
 const escapeRegExp = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -511,6 +548,16 @@ export default function Home() {
               ? `Search results for "${debouncedSearch}"`
               : "Showing market snapshots from Gamma"}
           </div>
+          {isLoading ? (
+            <div className="rounded-lg border border-dashed border-border bg-secondary/40 px-4 py-3 text-sm text-muted-foreground">
+              Fetching live market data...
+            </div>
+          ) : error ? (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              Live data is unavailable right now. Showing sample top markets and
+              cached UI controls.
+            </div>
+          ) : null}
         </header>
 
         <section className="grid gap-6 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
@@ -669,6 +716,27 @@ export default function Home() {
               </div>
             </CardContent>
           </Card>
+        </section>
+
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">Top Markets</h2>
+              <Badge variant="outline">Sample</Badge>
+            </div>
+            <span className="text-sm text-muted-foreground">
+              Seeded examples for the dashboard
+            </span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {SAMPLE_TOP_MARKETS.map((market) => (
+              <MarketCard
+                key={market.id}
+                market={market}
+                formatCurrency={formatCurrency}
+              />
+            ))}
+          </div>
         </section>
 
         <section>
